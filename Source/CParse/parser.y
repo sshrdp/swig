@@ -371,6 +371,10 @@ static void add_symbols(Node *n) {
 	  if ((Cmp(Getattr(n,"storage"),"virtual") == 0) && (Cmp(Getattr(n,"value"),"0") == 0)) {
 	    only_csymbol = 0;
 	  }
+	  if (Cmp(nodeType(n),"destructor") == 0) {
+	    /* Needed for "unref" feature */
+	    only_csymbol = 0;
+	  }
 	}
       } else {
 	  Setattr(n,"access", "public");
@@ -977,7 +981,6 @@ static void update_nested_classes(Node *n)
 
 static Node *nested_forward_declaration(const char *storage, const char *kind, String *sname, String *name, Node *cpp_opt_declarators) {
   Node *nn = 0;
-  int warned = 0;
 
   if (sname) {
     /* Add forward declaration of the nested type */
@@ -1021,13 +1024,12 @@ static Node *nested_forward_declaration(const char *storage, const char *kind, S
   if (!currentOuterClass || !GetFlag(currentOuterClass, "nested")) {
     if (nn && Equal(nodeType(nn), "classforward")) {
       Node *n = nn;
-      SWIG_WARN_NODE_BEGIN(n);
-      Swig_warning(WARN_PARSE_NAMED_NESTED_CLASS, cparse_file, cparse_line,"Nested %s not currently supported (%s ignored)\n", kind, sname ? sname : name);
-      SWIG_WARN_NODE_END(n);
-      warned = 1;
-    }
-
-    if (!warned) {
+      if (!GetFlag(n, "feature:ignore")) {
+	SWIG_WARN_NODE_BEGIN(n);
+	Swig_warning(WARN_PARSE_NAMED_NESTED_CLASS, cparse_file, cparse_line,"Nested %s not currently supported (%s ignored)\n", kind, sname ? sname : name);
+	SWIG_WARN_NODE_END(n);
+      }
+    } else {
       Swig_warning(WARN_PARSE_UNNAMED_NESTED_CLASS, cparse_file, cparse_line, "Nested %s not currently supported (ignored).\n", kind);
     }
   }
@@ -1372,7 +1374,7 @@ static void mark_nodes_as_extend(Node *n) {
 %token NONID DSTAR DCNOT
 %token <intvalue> TEMPLATE
 %token <str> OPERATOR
-%token <str> COPERATOR
+%token <str> CONVERSIONOPERATOR
 %token PARSETYPE PARSEPARM PARSEPARMS
 
 %left  CAST
@@ -1414,7 +1416,7 @@ static void mark_nodes_as_extend(Node *n) {
 /* Misc */
 %type <id>       identifier;
 %type <dtype>    initializer cpp_const exception_specification;
-%type <id>       storage_class;
+%type <id>       storage_class extern_string;
 %type <pl>       parms  ptail rawparms varargs_parms ;
 %type <pl>       templateparameters templateparameterstail;
 %type <p>        parm valparm rawvalparms valparms valptail ;
@@ -1530,11 +1532,11 @@ declaration    : swig_directive { $$ = $1; }
 
    This is nearly impossible to parse normally.  We just let the
    first part generate a syntax error and then resynchronize on the
-   COPERATOR token---discarding the rest of the definition. Ugh.
+   CONVERSIONOPERATOR token---discarding the rest of the definition. Ugh.
 
  */
 
-               | error COPERATOR {
+               | error CONVERSIONOPERATOR {
                   $$ = 0;
                   skip_decl();
                }
@@ -4435,7 +4437,7 @@ cpp_destructor_decl : NOT idtemplate LPAREN parms RPAREN cpp_end {
 
 
 /* C++ type conversion operator */
-cpp_conversion_operator : storage_class COPERATOR type pointer LPAREN parms RPAREN cpp_vend {
+cpp_conversion_operator : storage_class CONVERSIONOPERATOR type pointer LPAREN parms RPAREN cpp_vend {
                  $$ = new_node("cdecl");
                  Setattr($$,"type",$3);
 		 Setattr($$,"name",$2);
@@ -4450,7 +4452,7 @@ cpp_conversion_operator : storage_class COPERATOR type pointer LPAREN parms RPAR
 		 Setattr($$,"conversion_operator","1");
 		 add_symbols($$);
               }
-               | storage_class COPERATOR type AND LPAREN parms RPAREN cpp_vend {
+               | storage_class CONVERSIONOPERATOR type AND LPAREN parms RPAREN cpp_vend {
 		 SwigType *decl;
                  $$ = new_node("cdecl");
                  Setattr($$,"type",$3);
@@ -4467,7 +4469,7 @@ cpp_conversion_operator : storage_class COPERATOR type pointer LPAREN parms RPAR
 		 Setattr($$,"conversion_operator","1");
 		 add_symbols($$);
 	       }
-               | storage_class COPERATOR type LAND LPAREN parms RPAREN cpp_vend {
+               | storage_class CONVERSIONOPERATOR type LAND LPAREN parms RPAREN cpp_vend {
 		 SwigType *decl;
                  $$ = new_node("cdecl");
                  Setattr($$,"type",$3);
@@ -4485,7 +4487,7 @@ cpp_conversion_operator : storage_class COPERATOR type pointer LPAREN parms RPAR
 		 add_symbols($$);
 	       }
 
-               | storage_class COPERATOR type pointer AND LPAREN parms RPAREN cpp_vend {
+               | storage_class CONVERSIONOPERATOR type pointer AND LPAREN parms RPAREN cpp_vend {
 		 SwigType *decl;
                  $$ = new_node("cdecl");
                  Setattr($$,"type",$3);
@@ -4504,7 +4506,7 @@ cpp_conversion_operator : storage_class COPERATOR type pointer LPAREN parms RPAR
 		 add_symbols($$);
 	       }
 
-              | storage_class COPERATOR type LPAREN parms RPAREN cpp_vend {
+              | storage_class CONVERSIONOPERATOR type LPAREN parms RPAREN cpp_vend {
 		String *t = NewStringEmpty();
 		$$ = new_node("cdecl");
 		Setattr($$,"type",$3);
@@ -4652,9 +4654,7 @@ anon_bitfield_type : primitive_type { $$ = $1;
 /* ====================================================================== 
  *                       PRIMITIVES
  * ====================================================================== */
-
-storage_class  : EXTERN { $$ = "extern"; }
-               | EXTERN string {
+extern_string :  EXTERN string {
                    if (strcmp($2,"C") == 0) {
 		     $$ = "externc";
                    } else if (strcmp($2,"C++") == 0) {
@@ -4664,16 +4664,12 @@ storage_class  : EXTERN { $$ = "extern"; }
 		     $$ = 0;
 		   }
                }
-               | EXTERN string THREAD_LOCAL {
-                   if (strcmp($2,"C") == 0) {
-		     $$ = "externc thread_local";
-                   } else if (strcmp($2,"C++") == 0) {
-		     $$ = "extern thread_local";
-		   } else {
-		     Swig_warning(WARN_PARSE_UNDEFINED_EXTERN,cparse_file, cparse_line,"Unrecognized extern type \"%s\".\n", $2);
-		     $$ = 0;
-		   }
-               }
+	       ;
+
+storage_class  : EXTERN { $$ = "extern"; }
+	       | extern_string { $$ = $1; }
+	       | extern_string THREAD_LOCAL { $$ = "thread_local"; }
+	       | extern_string TYPEDEF { $$ = "typedef"; }
                | STATIC { $$ = "static"; }
                | TYPEDEF { $$ = "typedef"; }
                | VIRTUAL { $$ = "virtual"; }
@@ -6459,8 +6455,8 @@ idcolon        : idtemplate idcolontail {
                | NONID DCOLON idtemplate {
 		 $$ = NewStringf("::%s",$3);
                }
-               | OPERATOR {
-                 $$ = NewString($1);
+               | OPERATOR template_decl {
+                 $$ = NewStringf("%s%s",$1,$2);
 	       }
                | NONID DCOLON OPERATOR {
                  $$ = NewStringf("::%s",$3);
@@ -6477,7 +6473,7 @@ idcolontail    : DCOLON idtemplate idcolontail {
                | DCOLON OPERATOR {
                    $$ = NewStringf("::%s",$2);
                }
-/*               | DCOLON COPERATOR {
+/*               | DCOLON CONVERSIONOPERATOR {
                  $$ = NewString($2);                 
 		 } */
 

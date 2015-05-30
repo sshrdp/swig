@@ -321,6 +321,9 @@ else
   SWIGPYTHON = $(SWIG) -python -py3
 endif
 
+PEP8         = @PEP8@
+PEP8_FLAGS   = --ignore=E402,E501,E30,W291,W391
+
 # ----------------------------------------------------------------
 # Build a C dynamically loadable module
 # ----------------------------------------------------------------
@@ -373,8 +376,10 @@ endif
 PY2TO3 = 2to3 `2to3 -l | grep -v -E "Available|import$$" | awk '{print "-f "$$0}'`
 
 python_run: $(PYSCRIPT)
-	export PYTHONPATH=".:$$PYTHONPATH"; \
-	$(RUNTOOL) $(PYTHON) $(PYSCRIPT) $(RUNPIPE)
+ifneq (,$(PEP8))
+	$(PEP8) $(PEP8_FLAGS) $(PYSCRIPT)
+endif
+	env PYTHONPATH=$$PWD $(RUNTOOL) $(PYTHON) $(PYSCRIPT) $(RUNPIPE)
 
 ifneq (,$(SRCDIR))
 $(RUNME).py: $(SRCDIR)$(RUNME).py
@@ -883,7 +888,7 @@ OCAMLFIND=@OCAMLFIND@
 OCAMLMKTOP=@OCAMLMKTOP@ $(SWIGWHERE)
 NOLINK ?= false
 OCAMLPP= -pp "camlp4o ./swigp4.cmo"
-OCAMLP4WHERE=`$(COMPILETOOL) camlp4 -where`
+OCAMLP4WHERE=`$(COMPILETOOL) @CAMLP4@ -where`
 OCAMLCORE=\
 	rm -rf swig.mli swig.ml swigp4.ml && \
 	$(SWIG) -ocaml -co swig.mli 2>/dev/null &&  \
@@ -1345,6 +1350,8 @@ CSHARPCOMPILER = @CSHARPCOMPILER@
 CSHARPCILINTERPRETER = @CSHARPCILINTERPRETER@
 CSHARPCILINTERPRETER_FLAGS = @CSHARPCILINTERPRETER_FLAGS@
 CSHARPCFLAGS = @CSHARPCFLAGS@
+CSHARPFLAGS =
+CSHARPOPTIONS =
 CSHARPSO = @CSHARPSO@
 CSHARP_RUNME = $(CSHARPCILINTERPRETER) $(CSHARPCILINTERPRETER_FLAGS) ./$(RUNME).exe
 
@@ -1377,7 +1384,7 @@ SRCDIR_CSHARPSRCS =
 endif
 
 csharp_compile: $(SRCDIR_SRCS)
-	$(COMPILETOOL) $(CSHARPCOMPILER) $(CSHARPFLAGS) $(CSHARPSRCS) $(SRCDIR_CSHARPSRCS)
+	$(COMPILETOOL) $(CSHARPCOMPILER) $(CSHARPFLAGS) $(CSHARPOPTIONS) $(CSHARPSRCS) $(SRCDIR_CSHARPSRCS)
 
 # -----------------------------------------------------------------
 # Run CSharp example
@@ -1710,7 +1717,7 @@ SCILAB_LIBPREFIX = lib
 
 scilab:
 	$(SWIG) -scilab $(SWIGOPT) -o $(ISRCS) $(INTERFACEPATH)
-	$(CC) -c $(CCSHARED) $(CPPFLAGS) $(CFLAGS) $(SCILAB_INC) $(INCLUDES) $(ISRCS) $(SRCDIR_SRCS) $(SRCDIR_CSRCS)
+	$(CC) -g -c $(CCSHARED) $(CPPFLAGS) $(CFLAGS) $(SCILAB_INC) $(INCLUDES) $(ISRCS) $(SRCDIR_SRCS) $(SRCDIR_CSRCS)
 	$(LDSHARED) $(CFLAGS) $(LDFLAGS) $(IOBJS) $(OBJS) $(LIBS) -o $(SCILAB_LIBPREFIX)$(TARGET)$(SO)
 
 # ----------------------------------------------------------------
@@ -1719,7 +1726,7 @@ scilab:
 
 scilab_cpp:
 	$(SWIG) -c++ -scilab $(SWIGOPT) -o $(ICXXSRCS) $(INTERFACEPATH)
-	$(CXX) -c $(CCSHARED) $(CPPFLAGS) $(CXXFLAGS) $(SCILAB_INC) $(INCLUDES) $(ICXXSRCS) $(SRCDIR_SRCS) $(SRCDIR_CXXSRCS)
+	$(CXX) -g -c $(CCSHARED) $(CPPFLAGS) $(CXXFLAGS) $(SCILAB_INC) $(INCLUDES) $(ICXXSRCS) $(SRCDIR_SRCS) $(SRCDIR_CXXSRCS)
 	$(CXXSHARED) $(CXXFLAGS) $(LDFLAGS) $(IOBJS) $(OBJS) $(LIBS) $(CPP_DLLIBS) -o $(SCILAB_LIBPREFIX)$(TARGET)$(SO)
 
 # -----------------------------------------------------------------
@@ -1727,7 +1734,7 @@ scilab_cpp:
 # -----------------------------------------------------------------
 
 scilab_run:
-	env LD_LIBRARY_PATH=.:$$LD_LIBRARY_PATH $(RUNTOOL) $(SCILAB) $(SCILAB_OPT) -f $(SRCDIR)$(RUNME).sci $(RUNPIPE)
+	env LD_LIBRARY_PATH=$$PWD $(RUNTOOL) $(SCILAB) $(SCILAB_OPT) -f $(SRCDIR)$(RUNME).sci $(RUNPIPE)
 
 # -----------------------------------------------------------------
 # Scilab version
@@ -1749,6 +1756,10 @@ scilab_clean:
 ##################################################################
 #####                        Go                             ######
 ##################################################################
+
+# TODO: The Go make targets need simplifying to use configure time
+# configuration or to use Make's ifeq rather than using lots of
+# runtime shell code. The output will then be a lot less verbose.
 
 GO = @GO@
 GOGCC = @GOGCC@

@@ -156,6 +156,7 @@ CPP_TEST_CASES += \
 	conversion \
 	conversion_namespace \
 	conversion_ns_template \
+	conversion_operators \
 	cplusplus_throw \
 	cpp_basic \
 	cpp_enum \
@@ -198,6 +199,7 @@ CPP_TEST_CASES += \
 	director_protected \
 	director_protected_overloaded \
 	director_redefined \
+	director_ref \
 	director_smartptr \
 	director_thread \
 	director_unroll \
@@ -233,6 +235,7 @@ CPP_TEST_CASES += \
 	features \
 	fragments \
 	friends \
+	friends_template \
 	funcptr_cpp \
 	fvirtual \
 	global_namespace \

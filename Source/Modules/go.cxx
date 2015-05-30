@@ -1353,7 +1353,7 @@ private:
       Delete(ret_type);
     }
 
-    goargout(info->parms, parm_count);
+    goargout(info->parms);
 
     if (SwigType_type(info->result) != T_VOID) {
       String *goout = goTypemapLookup("goout", info->n, "swig_r");
@@ -1945,7 +1945,7 @@ private:
       Printv(f_go_wrappers, call, NULL);
       Delete(call);
 
-      goargout(parms, parm_count);
+      goargout(parms);
 
       if (need_return_var) {
 	if (goout == NULL) {
@@ -2035,7 +2035,7 @@ private:
    * needs to explicitly escape.  This is true if the parameter has a
    * non-empty argout or freearg typemap, because in those cases the
    * Go argument might be or contain a pointer.  We need to ensure
-   * that that pointer does not oint into the stack, which means that
+   * that that pointer does not point into the stack, which means that
    * it needs to escape.
    * ---------------------------------------------------------------------- */
   bool paramNeedsEscape(Parm *p) {
@@ -2487,20 +2487,41 @@ private:
    * property with the name to use to refer to that parameter.
    * ----------------------------------------------------------------------- */
 
-  void goargout(ParmList *parms, int parm_count) {
+  void goargout(ParmList *parms) {
     Parm *p = parms;
-    for (int i = 0; i < parm_count; ++i) {
-      p = getParm(p);
-      String *tm = goGetattr(p, "tmap:goargout");
+    while (p) {
+      String *tm = Getattr(p, "tmap:goargout");
       if (!tm) {
 	p = nextSibling(p);
       } else {
 	tm = Copy(tm);
 	Replaceall(tm, "$result", "swig_r");
 	Replaceall(tm, "$input", Getattr(p, "emit:goinput"));
-	Printv(f_go_wrappers, tm, NULL);
+	Printv(f_go_wrappers, tm, "\n", NULL);
 	Delete(tm);
 	p = Getattr(p, "tmap:goargout:next");
+      }
+    }
+
+    // When using cgo, if we need to memcpy a parameter to pass it to
+    // the C code, the compiler may think that the parameter is not
+    // live during the function call.  If the garbage collector runs
+    // while the C/C++ function is running, the parameter may be
+    // freed.  Force the compiler to see the parameter as live across
+    // the C/C++ function.
+    if (cgo_flag) {
+      int parm_count = emit_num_arguments(parms);
+      p = parms;
+      for (int i = 0; i < parm_count; ++i) {
+	p = getParm(p);
+	bool c_struct_type;
+	Delete(cgoTypeForGoValue(p, Getattr(p, "type"), &c_struct_type));
+	if (c_struct_type) {
+	  Printv(f_go_wrappers, "\tif Swig_escape_always_false {\n", NULL);
+	  Printv(f_go_wrappers, "\t\tSwig_escape_val = ", Getattr(p, "emit:goinput"), "\n", NULL);
+	  Printv(f_go_wrappers, "\t}\n", NULL);
+	}
+	p = nextParm(p);
       }
     }
   }
@@ -3538,6 +3559,8 @@ private:
     DelWrapper(dummy);
 
     Swig_typemap_attach_parms("gotype", parms, NULL);
+    Swig_typemap_attach_parms("goin", parms, NULL);
+    Swig_typemap_attach_parms("goargout", parms, NULL);
     Swig_typemap_attach_parms("imtype", parms, NULL);
     int parm_count = emit_num_arguments(parms);
 
@@ -3689,6 +3712,8 @@ private:
       }
 
       Printv(f_go_wrappers, call, "\n", NULL);
+
+      goargout(parms);
 
       Printv(f_go_wrappers, "\treturn p\n", NULL);
       Printv(f_go_wrappers, "}\n\n", NULL);
@@ -3887,11 +3912,13 @@ private:
     Printv(director_sig, "\n", NULL);
     Printv(director_sig, "{\n", NULL);
 
-    if (!is_ignored) {
+    if (is_ignored) {
+      Printv(f_c_directors, director_sig, NULL);
+    } else {
       makeDirectorDestructorWrapper(go_name, director_struct_name, director_sig);
-
-      Printv(f_c_directors, "  delete swig_mem;\n", NULL);
     }
+
+    Printv(f_c_directors, "  delete swig_mem;\n", NULL);
 
     Printv(f_c_directors, "}\n\n", NULL);
 
@@ -4456,7 +4483,7 @@ private:
 	  Printv(f_go_wrappers, "\tswig_r = *(*", ret_type, ")(unsafe.Pointer(&swig_r_p))\n", NULL);
 	}
 
-	goargout(parms, parm_count);
+	goargout(parms);
 
 	if (SwigType_type(result) != T_VOID) {
 	  if (goout == NULL) {
@@ -4758,7 +4785,7 @@ private:
 	  Printv(f_go_wrappers, "\tswig_r = *(*", ret_type, ")(unsafe.Pointer(&swig_r_p))\n", NULL);
 	}
 
-	goargout(parms, parm_count);
+	goargout(parms);
 
 	if (SwigType_type(result) != T_VOID) {
 	  if (goout == NULL) {
@@ -5611,9 +5638,9 @@ private:
 	    break;
 	  }
 
-	  // If all the wrappers have the same type in this position,
+	  // If all the overloads have the same type in this position,
 	  // we can omit the check.
-	  SwigType *tm = goWrapperType(pj, Getattr(pj, "type"), true);
+	  SwigType *tm = goOverloadType(pj, Getattr(pj, "type"));
 	  bool emitcheck = false;
 	  for (int k = 0; k < Len(coll) && !emitcheck; ++k) {
 	    Node *nk = Getitem(coll, k);
@@ -5635,7 +5662,7 @@ private:
 		break;
 	      }
 	      if (l == j) {
-		SwigType *tml = goWrapperType(pl, Getattr(pl, "type"), true);
+		SwigType *tml = goOverloadType(pl, Getattr(pl, "type"));
 		if (Cmp(tm, tml) != 0) {
 		  emitcheck = true;
 		}
@@ -5651,41 +5678,6 @@ private:
 	      Printf(f_go_wrappers, "\t\tif argc > %d {\n", j);
 	      ++num_braces;
 	    }
-
-	    Delete(tm);
-
-	    tm = goType(pj, Getattr(pj, "type"));
-
-	    // Now for a C++ class, tm is the interface type.  If this
-	    // is based on an undefined type, then require matching on
-	    // the underlying integer type.  This is because the
-	    // interface type we generate for an undefined type will
-	    // match the interface generated for any C++ class type.
-	    // It has to work that way so that we can handle a derived
-	    // type of an ignored type.  It's unlikely that anybody
-	    // will have a value of an undefined type, but we support
-	    // it because it worked in the past.
-	    SwigType *ty = SwigType_typedef_resolve_all(Getattr(pj, "type"));
-	    while (true) {
-	      if (SwigType_ispointer(ty)) {
-		SwigType_del_pointer(ty);
-	      } else if (SwigType_isarray(ty)) {
-		SwigType_del_array(ty);
-	      } else if (SwigType_isreference(ty)) {
-		SwigType_del_reference(ty);
-	      } else if (SwigType_isqualifier(ty)) {
-		SwigType_del_qualifier(ty);
-	      } else {
-		break;
-	      }
-	    }
-
-	    if (Getattr(undefined_types, ty) && !Getattr(defined_types, ty)) {
-	      Delete(tm);
-	      tm = goWrapperType(pj, Getattr(pj, "type"), true);
-	    }
-
-	    Delete(ty);
 
 	    fn = i + 1;
 	    Printf(f_go_wrappers, "\t\tif _, ok := a[%d].(%s); !ok {\n", j, tm);
@@ -6349,7 +6341,7 @@ private:
 
     String *ct = Getattr(n, "emit:cgotype");
     if (ct) {
-      *c_struct_type = (bool)Getattr(n, "emit:cgotypestruct");
+      *c_struct_type = Getattr(n, "emit:cgotypestruct") ? true : false;
       return Copy(ct);
     }
 
@@ -6460,6 +6452,46 @@ private:
     }
 
     return ret;
+  }
+
+  /* ----------------------------------------------------------------------
+   * goOverloadType()
+   *
+   * Given a type, return the Go type to use when dispatching of
+   * overloaded functions.  This is normally just the usual Go type.
+   * However, for a C++ class, the usual Go type is an interface type.
+   * And if that interface type represents a C++ type that SWIG does
+   * not know about, then the interface type generated for any C++
+   * class will match that interface.  So for that case, we match on
+   * the underlying integer type.
+   *
+   * It has to work this way so that we can handle a derived type of a
+   * %ignore'd type.  It's unlikely that anybody will have a value of
+   * an undefined type, but we support it because it worked in the
+   * past.
+   * ---------------------------------------------------------------------- */
+
+  String *goOverloadType(Node *n, SwigType *type) {
+    SwigType *ty = SwigType_typedef_resolve_all(type);
+    while (true) {
+      if (SwigType_ispointer(ty)) {
+	SwigType_del_pointer(ty);
+      } else if (SwigType_isarray(ty)) {
+	SwigType_del_array(ty);
+      } else if (SwigType_isreference(ty)) {
+	SwigType_del_reference(ty);
+      } else if (SwigType_isqualifier(ty)) {
+	SwigType_del_qualifier(ty);
+      } else {
+	break;
+      }
+    }
+
+    if (Getattr(undefined_types, ty) && !Getattr(defined_types, ty)) {
+      return goWrapperType(n, type, true);
+    }
+
+    return goType(n, type);
   }
 
   /* ----------------------------------------------------------------------

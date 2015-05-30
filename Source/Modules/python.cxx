@@ -13,9 +13,6 @@
 
 #include "swigmod.h"
 #include "cparse.h"
-
-static int treduce = SWIG_cparse_template_reduce(0);
-
 #include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
@@ -967,6 +964,7 @@ public:
 
     if (directorsEnabled()) {
       // Insert director runtime into the f_runtime file (make it occur before %header section)
+      Swig_insert_file("director_common.swg", f_runtime);
       Swig_insert_file("director.swg", f_runtime);
     }
 
@@ -1874,9 +1872,12 @@ public:
    *    Check if string v can be a Python value literal or a
    *    constant. Return NIL if it isn't.
    * ------------------------------------------------------------ */
-  String *convertValue(String *v, SwigType *t) {
+  String *convertValue(String *v, SwigType *type) {
     const char *const s = Char(v);
     char *end;
+    String *result = NIL;
+    bool fail = false;
+    SwigType *resolved_type = 0;
 
     // Check if this is a number in any base.
     long value = strtol(s, &end, 0);
@@ -1885,93 +1886,108 @@ public:
       if (errno == ERANGE) {
 	// There was an overflow, we could try representing the value as Python
 	// long integer literal, but for now don't bother with it.
-	return NIL;
-      }
+	fail = true;
+      } else {
+	if (*end != '\0') {
+	  // If there is a suffix after the number, we can safely ignore any
+	  // combination of "l" and "u", but not anything else (again, stuff like
+	  // "LL" could be handled, but we don't bother to do it currently).
+	  bool seen_long = false;
+	  for (char* p = end; *p != '\0'; ++p) {
+	    switch (*p) {
+	      case 'l':
+	      case 'L':
+		// Bail out on "LL".
+		if (seen_long) {
+		  fail = true;
+		  break;
+		}
+		seen_long = true;
+		break;
 
-      if (*end != '\0') {
-	// If there is a suffix after the number, we can safely ignore any
-	// combination of "l" and "u", but not anything else (again, stuff like
-	// "LL" could be handled, but we don't bother to do it currently).
-	bool seen_long = false;
-	for (char* p = end; *p != '\0'; ++p) {
-	  switch (*p) {
-	    case 'l':
-	    case 'L':
-	      // Bail out on "LL".
-	      if (seen_long)
-		return NIL;
-	      seen_long = true;
-	      break;
+	      case 'u':
+	      case 'U':
+		break;
 
-	    case 'u':
-	    case 'U':
-	      break;
-
-	    default:
-	      // Except that our suffix could actually be the fractional part of
-	      // a floating point number, so we still have to check for this.
-	      return convertDoubleValue(v);
-	  }
-	}
-      }
-
-      // Deal with the values starting with 0 first as they can be octal or
-      // hexadecimal numbers or even pointers.
-      if (s[0] == '0') {
-	if (Len(v) == 1) {
-	  // This is just a lone 0, but it needs to be represented differently
-	  // in Python depending on whether it's a zero or a null pointer.
-	  if (SwigType_ispointer(t))
-	    return NewString("None");
-	  else
-	    return v;
-	} else if (s[1] == 'x' || s[1] == 'X') {
-	  // This must have been a hex number, we can use it directly in Python,
-	  // so nothing to do here.
-	} else {
-	  // This must have been an octal number, we have to change its prefix
-	  // to be "0o" in Python 3 only (and as long as we still support Python
-	  // 2.5, this can't be done unconditionally).
-	  if (py3) {
-	    if (end - s > 1) {
-	      String *res = NewString("0o");
-	      Append(res, NewStringWithSize(s + 1, end - s - 1));
-	      return res;
+	      default:
+		// Except that our suffix could actually be the fractional part of
+		// a floating point number, so we still have to check for this.
+		result = convertDoubleValue(v);
 	    }
 	  }
 	}
-      }
 
-      // Avoid unnecessary string allocation in the common case when we don't
-      // need to remove any suffix.
-      return *end == '\0' ? v : NewStringWithSize(s, end - s);
+	if (!fail) {
+	  // Allow integers as the default value for a bool parameter.
+	  resolved_type = SwigType_typedef_resolve_all(type);
+	  if (Cmp(resolved_type, "bool") == 0) {
+	    result = NewString(value ? "True" : "False");
+	  } else {
+	    // Deal with the values starting with 0 first as they can be octal or
+	    // hexadecimal numbers or even pointers.
+	    if (s[0] == '0') {
+	      if (Len(v) == 1) {
+		// This is just a lone 0, but it needs to be represented differently
+		// in Python depending on whether it's a zero or a null pointer.
+		if (SwigType_ispointer(resolved_type))
+		  result = NewString("None");
+		else
+		  result = v;
+	      } else if (s[1] == 'x' || s[1] == 'X') {
+		// This must have been a hex number, we can use it directly in Python,
+		// so nothing to do here.
+	      } else {
+		// This must have been an octal number, we have to change its prefix
+		// to be "0o" in Python 3 only (and as long as we still support Python
+		// 2.5, this can't be done unconditionally).
+		if (py3) {
+		  if (end - s > 1) {
+		    result = NewString("0o");
+		    Append(result, NewStringWithSize(s + 1, end - s - 1));
+		  }
+		}
+	      }
+	    }
+
+	    // Avoid unnecessary string allocation in the common case when we don't
+	    // need to remove any suffix.
+	    if (!result)
+	      result = *end == '\0' ? v : NewStringWithSize(s, end - s);
+	  }
+	}
+      }
     }
 
     // Check if this is a floating point number (notice that it wasn't
     // necessarily parsed as a long above, consider e.g. ".123").
-    if (String *res = convertDoubleValue(v)) {
-      return res;
-    }
+    if (!fail && !result) {
+      result = convertDoubleValue(v);
+      if (!result) {
+	if (Strcmp(v, "true") == 0 || Strcmp(v, "TRUE") == 0)
+	  result = NewString("True");
+	else if (Strcmp(v, "false") == 0 || Strcmp(v, "FALSE") == 0)
+	  result = NewString("False");
+	else if (Strcmp(v, "NULL") == 0 || Strcmp(v, "nullptr") == 0) {
+	  if (!resolved_type)
+	    resolved_type = SwigType_typedef_resolve_all(type);
+	  result = SwigType_ispointer(resolved_type) ? NewString("None") : NewString("0");
+	}
 
-    if (Strcmp(v, "true") == 0 || Strcmp(v, "TRUE") == 0)
-      return NewString("True");
-    if (Strcmp(v, "false") == 0 || Strcmp(v, "FALSE") == 0)
-      return NewString("False");
-    if (Strcmp(v, "NULL") == 0 || Strcmp(v, "nullptr") == 0)
-      return SwigType_ispointer(t) ? NewString("None") : NewString("0");
-
-    // This could also be an enum type, default value of which could be
-    // representable in Python if it doesn't include any scope (which could,
-    // but currently is not, translated).
-    if (!Strchr(s, ':')) {
-      Node *lookup = Swig_symbol_clookup(v, 0);
-      if (lookup) {
-	if (Cmp(Getattr(lookup, "nodeType"), "enumitem") == 0)
-	  return Getattr(lookup, "sym:name");
+	// This could also be an enum type, default value of which could be
+	// representable in Python if it doesn't include any scope (which could,
+	// but currently is not, translated).
+	else if (!Strchr(s, ':')) {
+	  Node *lookup = Swig_symbol_clookup(v, 0);
+	  if (lookup) {
+	    if (Cmp(Getattr(lookup, "nodeType"), "enumitem") == 0)
+	      result = Getattr(lookup, "sym:name");
+	  }
+	}
       }
     }
 
-    return NIL;
+    Delete(resolved_type);
+    return result;
   }
 
   /* ------------------------------------------------------------
@@ -1984,34 +2000,40 @@ public:
    *    at C++ code level where they can always be handled.
    * ------------------------------------------------------------ */
   bool is_representable_as_pyargs(Node *n) {
-    bool is_representable = true;
-
     ParmList *plist = CopyParmList(Getattr(n, "parms"));
+    Swig_typemap_attach_parms("default", plist, NULL);
+
     Parm *p;
     Parm *pnext;
 
     for (p = plist; p; p = pnext) {
-      pnext = NIL;
+      pnext = nextSibling(p);
       String *tm = Getattr(p, "tmap:in");
       if (tm) {
-	pnext = Getattr(p, "tmap:in:next");
+	Parm *in_next = Getattr(p, "tmap:in:next");
+	if (in_next)
+	  pnext = in_next;
 	if (checkAttribute(p, "tmap:in:numinputs", "0")) {
 	  continue;
 	}
       }
-      if (!pnext) {
-	pnext = nextSibling(p);
-      }
+
+      // "default" typemap can contain arbitrary C++ code, so while it could, in
+      // principle, be possible to examine it and check if it's just something
+      // simple of the form "$1 = expression" and then use convertValue() to
+      // check if expression can be used in Python, but for now we just
+      // pessimistically give up and prefer to handle this at C++ level only.
+      if (Getattr(p, "tmap:default"))
+	return false;
+
       if (String *value = Getattr(p, "value")) {
 	String *type = Getattr(p, "type");
-	if (!convertValue(value, type)) {
-	  is_representable = false;
-	  break;
-	}
+	if (!convertValue(value, type))
+	  return false;
       }
     }
 
-    return is_representable;
+    return true;
   }
 
 
@@ -2053,8 +2075,17 @@ public:
     if (nn)
       n = nn;
 
-    /* For overloaded function, just use *args */
-    if (is_real_overloaded(n) || GetFlag(n, "feature:compactdefaultargs") || !is_representable_as_pyargs(n)) {
+    /* We prefer to explicitly list all parameters of the C function in the
+       generated Python code as this makes the function more convenient to use,
+       however in some cases we must replace the real parameters list with just
+       the catch all "*args". This happens when:
+
+	1. The function is overloaded as Python doesn't support this.
+	2. We were explicitly asked to use the "compact" arguments form.
+	3. We were explicitly asked to use default args from C via the "python:cdefaultargs" feature.
+	4. One of the default argument values can't be represented in Python.
+     */
+    if (is_real_overloaded(n) || GetFlag(n, "feature:compactdefaultargs") || GetFlag(n, "feature:python:cdefaultargs") || !is_representable_as_pyargs(n)) {
       String *parms = NewString("");
       if (in_class)
 	Printf(parms, "self, ");
@@ -2683,14 +2714,12 @@ public:
       Printv(f->locals, "  char *  kwnames[] = ", kwargs, ";\n", NIL);
     }
 
-    if (use_parse || allow_kwargs || !modernargs) {
-      if (builtin && in_class && tuple_arguments == 0) {
-	Printf(parse_args, "    if (args && PyTuple_Check(args) && PyTuple_GET_SIZE(args) > 0) SWIG_fail;\n");
-      } else {
-	Printf(parse_args, ":%s\"", iname);
-	Printv(parse_args, arglist, ")) SWIG_fail;\n", NIL);
-	funpack = 0;
-      }
+    if (builtin && in_class && tuple_arguments == 0) {
+      Printf(parse_args, "    if (args && PyTuple_Check(args) && PyTuple_GET_SIZE(args) > 0) SWIG_exception_fail(SWIG_TypeError, \"%s takes no arguments\");\n", iname);
+    } else if (use_parse || allow_kwargs || !modernargs) {
+      Printf(parse_args, ":%s\"", iname);
+      Printv(parse_args, arglist, ")) SWIG_fail;\n", NIL);
+      funpack = 0;
     } else {
       Clear(parse_args);
       if (funpack) {
@@ -3057,6 +3086,17 @@ public:
     }
 
     /* If this is a builtin type, create a PyGetSetDef entry for this member variable. */
+    if (builtin) {
+      const char *memname = "__dict__";
+      Hash *h = Getattr(builtin_getset, memname);
+      if (!h) {
+        h = NewHash();
+        Setattr(builtin_getset, memname, h);
+        Delete(h);
+      }
+      Setattr(h, "getter", "SwigPyObject_get___dict__");
+    }
+
     if (builtin_getter) {
       String *memname = Getattr(n, "membervariableHandler:sym:name");
       if (!memname)
